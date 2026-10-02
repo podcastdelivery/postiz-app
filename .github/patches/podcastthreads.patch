@@ -1,0 +1,45 @@
+diff --git a/libraries/nestjs-libraries/src/integrations/social/threads.provider.ts b/libraries/nestjs-libraries/src/integrations/social/threads.provider.ts
+index 26a4a12..21974b0 100644
+--- a/libraries/nestjs-libraries/src/integrations/social/threads.provider.ts
++++ b/libraries/nestjs-libraries/src/integrations/social/threads.provider.ts
+@@ -19,6 +19,14 @@ import { Integration } from '@prisma/client';
+ import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
+ import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+ 
++// Podcast Delivery patch: every Threads post gets the same Topic Tag. Meta
++// allows exactly one per post, 1-50 characters, no periods or ampersands —
++// podcastthreads fits. Hardcoded because it's the same value on every post;
++// see podcastdelivery-web's social-integrations-refinement branch for why
++// Postiz's own public API has nowhere to carry a per-post value yet
++// (https://github.com/gitroomhq/postiz-app/issues/1497).
++const PODCAST_DELIVERY_TOPIC_TAG = 'podcastthreads';
++
+ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
+   identifier = 'threads';
+   name = 'Threads';
+@@ -265,6 +273,9 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
+       ...(mediaType === 'image_url' ? { image_url: media.path } : {}),
+       ...(isCarouselItem ? { is_carousel_item: 'true' } : {}),
+       ...(replyToId ? { reply_to_id: replyToId } : {}),
++      // A carousel item is a child of the real post: Meta rejects a
++      // topic_tag on those, so it only ever goes on the top-level container.
++      ...(isCarouselItem ? {} : { topic_tag: PODCAST_DELIVERY_TOPIC_TAG }),
+       media_type: mediaType === 'video_url' ? 'VIDEO' : 'IMAGE',
+       text: message,
+       access_token: accessToken,
+@@ -313,6 +324,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
+       media_type: 'CAROUSEL',
+       children: mediaIds.join(','),
+       ...(replyToId ? { reply_to_id: replyToId } : {}),
++      topic_tag: PODCAST_DELIVERY_TOPIC_TAG,
+       access_token: accessToken,
+     });
+ 
+@@ -338,6 +350,7 @@ export class ThreadsProvider extends SocialAbstract implements SocialProvider {
+     const form = new FormData();
+     form.append('media_type', 'TEXT');
+     form.append('text', message);
++    form.append('topic_tag', PODCAST_DELIVERY_TOPIC_TAG);
+     form.append('access_token', accessToken);
+ 
+     if (replyToId) {

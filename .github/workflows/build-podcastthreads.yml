@@ -1,0 +1,103 @@
+# Builds upstream Postiz with the Podcast Delivery Threads topic-tag patch
+# (.github/patches/podcastthreads.patch) and pushes it to GHCR, so the NAS only
+# ever pulls a finished image and never compiles Postiz itself.
+#
+#   Manual:   Actions -> Build Postiz (podcastthreads) -> Run workflow (blank tag = latest release)
+#   Weekly:   Mondays 10:00 UTC, builds the latest release only if it hasn't been built yet
+#
+# Output: ghcr.io/<owner>/postiz-app:<upstream-tag>-pt   (and :latest-pt)
+# If the patch no longer applies or the build fails, nothing is pushed.
+
+name: Build Postiz (podcastthreads)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream release tag, e.g. v2.25.0 (blank = latest release)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 10 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-podcastthreads
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve upstream tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$(gh api repos/gitroomhq/postiz-app/releases/latest --jq .tag_name)}"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/postiz-app"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && docker manifest inspect "$image:$tag-pt" >/dev/null 2>&1; then
+            echo "$image:$tag-pt already exists, nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building $image:$tag-pt"
+          fi
+
+      - name: Check out patch
+        if: steps.tag.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          path: fork
+          sparse-checkout: .github
+
+      - name: Check out upstream ${{ steps.tag.outputs.tag }}
+        if: steps.tag.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: gitroomhq/postiz-app
+          ref: ${{ steps.tag.outputs.tag }}
+          path: src
+
+      - name: Apply podcastthreads patch
+        if: steps.tag.outputs.skip != 'true'
+        run: git -C src apply --verbose ../fork/.github/patches/podcastthreads.patch
+
+      - name: Free runner disk space
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Set up Buildx
+        if: steps.tag.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: steps.tag.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: src/Dockerfile.dev
+          platforms: linux/amd64
+          push: true
+          build-args: NEXT_PUBLIC_VERSION=${{ steps.tag.outputs.tag }}
+          tags: |
+            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}-pt
+            ${{ steps.tag.outputs.image }}:latest-pt
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}-pt
